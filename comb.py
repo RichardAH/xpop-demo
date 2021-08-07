@@ -558,8 +558,8 @@ def startup():
     cam.set(cv2.CAP_PROP_FRAME_WIDTH, camera_res_x)
     cam.set(cv2.CAP_PROP_FRAME_HEIGHT, camera_res_y)
     cam.set(cv2.CAP_PROP_BRIGHTNESS, camera_brightness)
-    cam.set(cv2.CAP_PROP_FOCUS, 0) # set focus as near as possible
-    cam.set(cv2.CAP_PROP_AUTOFOCUS, 1) # disable auto focus
+#    cam.set(cv2.CAP_PROP_FOCUS, 0) # set focus as near as possible
+#    cam.set(cv2.CAP_PROP_AUTOFOCUS, 1) # disable auto focus
 #    _, img = cam.read()
 #    img = cv2.flip(img, -1)
 #    cv2.imwrite("frame.jpg", img) 
@@ -591,6 +591,7 @@ def video_display(thread_id):
 
     canvas.pack()
 
+    complete_counter = 0
     while True:
 
         if time.time() > t_end:
@@ -619,7 +620,11 @@ def video_display(thread_id):
         text = display_text + " ~ " + str(math.floor(t_end-time.time())) + str("s until timeout")
 
         if complete:
-            text = final_text
+            text = final_text + "\n" + "Demo reset in " + str(math.floor((20 - complete_counter)/ui_refresh_interval))
+            complete_counter = complete_counter + 1
+
+        if complete_counter > 20:
+            break
 
         label.configure(text=text)
         window.update_idletasks()
@@ -768,6 +773,13 @@ def video_decoder(thread_id):
                     final_text = "Invalid xPoP / Verification Failed."
                     if verify_result:
                         final_text = "Valid xPoP! " + verify_result["tx_blob"]["TransactionType"] + " " + verify_result["tx_meta"]["TransactionResult"] + "\n" + verify_result["tx_hash"]
+                        if "tx_destination" in verify_result:
+                            final_text = final_text + "\n" + "Destination: " + verify_result["tx_destination"]
+                        if "tx_destination_tag" in verify_result:
+                            final_text = final_text + "\n" + "Tag: " + str(verify_result["tx_destination_tag"])
+                        if "tx_delivered_drops" in verify_result:
+                            final_text = final_text + "\n" + "Drops delivered: " + str(verify_result["tx_delivered_drops"])
+                        
                     mutex_ui.release()
 
                     dying = True
@@ -788,12 +800,12 @@ display_text = "xPoP! Place animating QR under reader."
 timeout = 100
 t_end = time.time() + timeout
 unprocessed_frame_cap = 200
-unprocessed_frame_delay = 3000
+unprocessed_frame_delay = 4000
 camera_res_x = 800
 camera_res_y = 600
 camera_brightness = 100
 ui_font_size = 12
-ui_refresh_interval = 0.5
+ui_refresh_interval = 0.7
 verify_key = "ED45D1840EE724BE327ABE9146503D5848EFD5F38B6D5FEDE71E80ACCE5E6E738B"
 verify_result = False
 dying = False
