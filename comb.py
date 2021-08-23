@@ -579,6 +579,7 @@ def video_display(thread_id):
     global final_text
     global ui_font_size
     global ui_refresh_interval
+    global wait_after_complete 
 
     window = tkinter.Tk()
     window.title("xPoP")
@@ -622,10 +623,11 @@ def video_display(thread_id):
         text = display_text + " ~ " + str(math.floor(t_end-time.time())) + str("s until timeout")
 
         if complete:
-            text = final_text + "\n" + "Demo reset in " + str(math.floor((20 - complete_counter)/ui_refresh_interval))
+            text = final_text + "\n" + "Demo reset in " + str(math.floor((wait_after_complete - complete_counter)/ui_refresh_interval))
             complete_counter = complete_counter + 1
 
-        if complete_counter > 20:
+        if complete_counter > wait_after_complete:
+            dying = True
             break
 
         label.configure(text=text)
@@ -962,6 +964,7 @@ verify_result = False
 dying = False
 complete = False            
 final_text = ""
+wait_after_complete = 5
 
 startup()
 
