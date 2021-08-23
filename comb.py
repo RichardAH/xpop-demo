@@ -273,6 +273,7 @@ def proof_contains(proof, h):
 def verify(xpop, vl_key):
     if type(xpop) == str:
         try:
+            #print('raw xpop', xpop)
             xpop = json.loads(xpop)
         except:
             return err("Invalid json")
@@ -606,7 +607,7 @@ def video_display(thread_id):
             dp.append(display_frame[0])
         mutex_ui.release()
 
-        if len(dp) > 0:
+        if len(dp) > 0 and type(dp[0]) != type(None):
             try:
 #               dp[0] = cv2.resize(dp[0], (w,h))
                 photo = PIL.ImageTk.PhotoImage(image = PIL.Image.fromarray(dp[0]))
@@ -643,7 +644,7 @@ def video_reader(thread_id):
     global display_frame
     global frame_raw
     global unprocessed_frame_cap
-    global unprocessed_frame_delay
+    global min_frame_delay
 
     unprocessed_frames = 0
     while not dying and not complete:
@@ -660,7 +661,7 @@ def video_reader(thread_id):
                 frame_raw = [img]
         finally:
             mutex_frame_raw.release()
-        cam.set(cv2.CAP_PROP_FOCUS, 0) # set focus as near as possible
+        #cam.set(cv2.CAP_PROP_FOCUS, 0) # set focus as near as possible
 
         if not mutex_ui.locked():
             mutex_ui.acquire()
@@ -671,8 +672,155 @@ def video_reader(thread_id):
             mutex_ui.release()
 
         
-        time.sleep(unprocessed_frames / unprocessed_frame_delay)
+#        time.sleep(min_frame_delay)
             
+def attempt_reconstructions():
+    global parity_data
+    global parity_len
+    global frame_count
+    global frame_data
+    global mutex_ui
+    global dying
+    global first_frame_seen
+    global display_text
+    global final_text
+    global expected_frame_count
+    global frame_raw
+    global t_end
+    global timeout
+    global verify_key
+    global verify_result
+    global complete
+
+    mutex_frame_data.acquire()
+    try:
+        p = sorted(parity_data.keys())
+        if len(p) < 1:
+            return
+        
+        pairs = [[0, p[0]]]
+        for i in range(1, len(p)):
+            pairs.append([p[i-1], p[i]])
+        
+        for i in pairs:
+            lower = i[0]
+            higher = i[1]
+            # count missing
+            missing_count = 0
+            missing = -1
+            for j in range(lower+1, higher+1):
+                if j in frame_data:
+                    continue
+                missing_count = missing_count + 1
+                if missing_count > 1:
+                    break
+                missing = j
+                
+            
+            if missing_count != 1:
+                continue
+            
+            if lower == 0:
+                for j in range(lower+1, higher+1):
+                    if j != missing:
+                        print("reconstruct " + str(missing) + " using " + str(j))
+                        print("frame[" + str(j) + "] = ", frame_data[j])
+
+            # execution to here means there is only one frame missing in this span
+            # now we can perform a reconstruction
+            r = []
+            for x in range(0, len(parity_data[higher])):
+                sum = parity_data[higher][x]
+
+                if lower > 0: # subtract lower parity frame
+                    sum = sum + (85 - parity_data[lower][x])
+                else:
+                    sum = sum - 33
+                
+                # subtract frames we have
+                for j in range(lower+1, higher+1):
+                    if j in frame_data and x < len(frame_data[j]):
+                        sum = sum + (85 - (frame_data[j][x] - 33))
+                
+                sum = sum % 85
+        
+                sum = sum + 33                
+
+                r.append(sum)
+                
+
+            # trim final frame when applicable
+            if missing == higher:
+                r = r[0:parity_len[higher]]
+    
+
+            frame_data[missing] = bytes(r)
+            print("reconstructed frame : " + str(missing) + "[" + str(lower) + ", " + str(higher) + "]")
+
+    except Exception as e:
+        print("exception: ", e)
+        
+    finally:
+        mutex_frame_data.release()
+
+def try_complete():
+    global parity_data
+    global parity_len
+    global frame_count
+    global frame_data
+    global mutex_ui
+    global dying
+    global first_frame_seen
+    global display_text
+    global final_text
+    global expected_frame_count
+    global frame_raw
+    global t_end
+    global timeout
+    global verify_key
+    global verify_result
+    global complete
+
+    if frame_count == -1:
+        return
+
+    attempt_reconstructions()
+    mutex_frame_data.acquire()
+    try:
+        if len(frame_data) == frame_count:
+            mutex_ui.acquire()
+            final_text = "Processing XRPL Proof of Payment..."
+            complete = True
+            mutex_ui.release()
+            full_data = b''
+            for i in range(1, frame_count+1):
+                full_data += frame_data[i]
+
+            try:
+                full_data = brotli.decompress(base64.a85decode(full_data)).decode('utf-8')
+            except:
+                full_data = full_data.decode('utf-8')
+
+            verify_result = verify(full_data, verify_key)
+
+            print(verify_result)
+            mutex_ui.acquire()
+            final_text = "Invalid xPoP / Verification Failed."
+            if verify_result:
+                final_text = "Valid xPoP! " + verify_result["tx_blob"]["TransactionType"] + " " + verify_result["tx_meta"]["TransactionResult"] + "\n" + verify_result["tx_hash"]
+                if "tx_destination" in verify_result:
+                    final_text = final_text + "\n" + "Destination: " + verify_result["tx_destination"]
+                if "tx_destination_tag" in verify_result:
+                    final_text = final_text + "\n" + "Tag: " + str(verify_result["tx_destination_tag"])
+                if "tx_delivered_drops" in verify_result:
+                    final_text = final_text + "\n" + "Drops delivered: " + str(verify_result["tx_delivered_drops"])
+                
+            mutex_ui.release()
+
+            dying = True
+    finally:
+        mutex_frame_data.release()
+
 
 def video_decoder(thread_id):
     global dying
@@ -682,11 +830,14 @@ def video_decoder(thread_id):
     global expected_frame_count
     global frame_raw
     global frame_data
+    global frame_count
     global t_end
     global timeout
     global verify_key
     global verify_result
     global complete
+    global parity_data
+    global parity_len
 
     while not dying and not complete:
         mutex_frame_raw.acquire()
@@ -703,6 +854,10 @@ def video_decoder(thread_id):
             print("thread waiting", thread_id)
             continue
         #img = cv2.flip(img, -1)
+        if type(img) == type(None):
+            print("cant read video device")
+            time.sleep(2)
+            continue
         dimg = decode(img)
         if len(dimg) == 0:
             img = cv2.flip(img, -1)
@@ -713,25 +868,46 @@ def video_decoder(thread_id):
 
             first_frame_seen = True
             b = dimg[0].data
-            if len(b) < 8 or b[0:4] != b'XPOP':
+
+            if len(b) < 8:
                 continue
+
+            packet_type = b[0:4]
+            is_par = packet_type == b'XPAR'
+            if not is_par and packet_type != b'XPOP':
+                continue
+        
 
             frame_count = -1
             frame_number = -1
-            txt = "can't read, try adjusting"
+            frame_size = -1
+            txt = ""
             try:
-                frame_count = int(b[6:8], 16)
-                frame_number = int(b[4:6],16) - 1
-                txt = "xPoP Acquired: " + str(math.floor(100*len(frame_data)/frame_count)) + "%"
-                txt = txt + " [" + str(len(frame_data)) + "/" + str(frame_count) + "]"
+                frame_count = int(b[6:8], 16) # for parity data this is actually the end frame
+                frame_number = int(b[4:6],16) # for parity data this is the begin frame
+                frame_size = int(b[8:12], 16)
+                if not is_par:
+                    txt = "xPoP Acquired: " + str(math.floor(100*len(frame_data)/frame_count)) + "%"
+                    txt = txt + " [" + str(len(frame_data)) + "/" + str(frame_count) + "]"
             except:
                 pass
 
-            mutex_ui.acquire()
-            display_text = txt
-            mutex_ui.release()
+            if not is_par:
+                mutex_ui.acquire()
+                display_text = txt
+                mutex_ui.release()
 
             if frame_count == -1:
+                continue
+
+            if is_par:
+                if frame_number != 1 or frame_count in parity_data:
+                    continue
+                mutex_frame_data.acquire()
+                parity_data[frame_count] = b[12:]
+                parity_len[frame_count] = frame_size
+                mutex_frame_data.release()
+                try_complete()
                 continue
 
             if expected_frame_count == -1:
@@ -744,54 +920,28 @@ def video_decoder(thread_id):
                 mutex_frame_raw.acquire()
                 frame_raw = []
                 first_frame_seen = False
+                parity_data = {}
+                parity_len = {}
                 mutex_frame_raw.release()
                 mutex_frame_data.release()
 
             if frame_number in frame_data:
+                try_complete()
                 continue
 
             mutex_frame_data.acquire()
-            try:
-                frame_data[frame_number] = b[8:]
-                if len(frame_data) == frame_count:
-                    mutex_ui.acquire()
-                    final_text = "Processing XRPL Proof of Payment..."
-                    complete = True
-                    mutex_ui.release()
-                    full_data = b''
-                    for i in range(frame_count):
-                        full_data += frame_data[i]
-                    try:
-                        full_data = brotli.decompress(base64.a85decode(full_data)).decode('utf-8')
-                    except:
-                        full_data = full_data.decode('utf-8')
-
-                    verify_result = verify(full_data, verify_key)
-
-                    print(verify_result)
-                    mutex_ui.acquire()
-                    final_text = "Invalid xPoP / Verification Failed."
-                    if verify_result:
-                        final_text = "Valid xPoP! " + verify_result["tx_blob"]["TransactionType"] + " " + verify_result["tx_meta"]["TransactionResult"] + "\n" + verify_result["tx_hash"]
-                        if "tx_destination" in verify_result:
-                            final_text = final_text + "\n" + "Destination: " + verify_result["tx_destination"]
-                        if "tx_destination_tag" in verify_result:
-                            final_text = final_text + "\n" + "Tag: " + str(verify_result["tx_destination_tag"])
-                        if "tx_delivered_drops" in verify_result:
-                            final_text = final_text + "\n" + "Drops delivered: " + str(verify_result["tx_delivered_drops"])
-                        
-                    mutex_ui.release()
-
-                    dying = True
-            finally:
-                mutex_frame_data.release()
-
+            frame_data[frame_number] = b[12:]
+            mutex_frame_data.release()
+            try_complete()
 
 mutex_frame_raw = Lock()
 mutex_frame_data = Lock()
 mutex_ui = Lock()
+frame_count = -1
 frame_raw = []
 frame_data = {}
+parity_data = {}
+parity_len = {}
 cam = cv2.VideoCapture(0)
 first_frame_seen = False #don't record frames aggressively until the first successful decode
 expected_frame_count = -1
@@ -800,7 +950,7 @@ display_text = "xPoP! Place animating QR under reader."
 timeout = 100
 t_end = time.time() + timeout
 unprocessed_frame_cap = 200
-unprocessed_frame_delay = 4000
+min_frame_delay = 0.001
 camera_res_x = 800
 camera_res_y = 600
 camera_brightness = 100
@@ -818,7 +968,7 @@ a = Thread(target=video_reader, args=("a"))
 b = Thread(target=video_decoder, args=("b"))
 c = Thread(target=video_decoder, args=("c"))
 e = Thread(target=video_decoder, args=("e"))
-f = Thread(target=video_decoder, args=("f"))
+#f = Thread(target=video_decoder, args=("f"))
 d = Thread(target=video_display, args=("d"))
 
 a.start()
@@ -826,13 +976,13 @@ b.start()
 c.start()
 d.start()
 e.start()
-f.start()
+#f.start()
 
 b.join()
 c.join()
 d.join()
 e.join()
-f.join()
+#f.join()
 
 cleanup()
 
