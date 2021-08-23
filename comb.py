@@ -582,7 +582,8 @@ def video_display(thread_id):
 
     window = tkinter.Tk()
     window.title("xPoP")
-    window.attributes("-fullscreen", True)
+#    window.attributes("-fullscreen", True)
+    window.geometry("800x600")
     window.update()
     w = window.winfo_width()
     h = window.winfo_height()
@@ -610,7 +611,7 @@ def video_display(thread_id):
         if len(dp) > 0 and type(dp[0]) != type(None):
             try:
 #               dp[0] = cv2.resize(dp[0], (w,h))
-                photo = PIL.ImageTk.PhotoImage(image = PIL.Image.fromarray(dp[0]))
+                photo = PIL.ImageTk.PhotoImage(image = PIL.Image.fromarray(dp[0][:,:,::-1]))
             finally:
                 pass
 
@@ -692,6 +693,9 @@ def attempt_reconstructions():
     global verify_result
     global complete
 
+    if complete or dying:
+        return
+
     mutex_frame_data.acquire()
     try:
         p = sorted(parity_data.keys())
@@ -720,12 +724,6 @@ def attempt_reconstructions():
             if missing_count != 1:
                 continue
             
-            if lower == 0:
-                for j in range(lower+1, higher+1):
-                    if j != missing:
-                        print("reconstruct " + str(missing) + " using " + str(j))
-                        print("frame[" + str(j) + "] = ", frame_data[j])
-
             # execution to here means there is only one frame missing in this span
             # now we can perform a reconstruction
             r = []
@@ -780,6 +778,9 @@ def try_complete():
     global verify_key
     global verify_result
     global complete
+
+    if complete or dying:
+        return
 
     if frame_count == -1:
         return
@@ -891,14 +892,14 @@ def video_decoder(thread_id):
                     txt = txt + " [" + str(len(frame_data)) + "/" + str(frame_count) + "]"
             except:
                 pass
+            
+            if frame_count == -1:
+                continue
 
             if not is_par:
                 mutex_ui.acquire()
                 display_text = txt
                 mutex_ui.release()
-
-            if frame_count == -1:
-                continue
 
             if is_par:
                 if frame_number != 1 or frame_count in parity_data:
