@@ -18,7 +18,8 @@ from binascii  import hexlify, unhexlify
 import math
 import base64
 
-
+# Set according to what your connected camera is
+CAMERAPORT = 0
 
 def err(e):
     sys.stderr.write("Error: " + e + "\n")
@@ -945,7 +946,7 @@ frame_raw = []
 frame_data = {}
 parity_data = {}
 parity_len = {}
-cam = cv2.VideoCapture(0)
+cam = cv2.VideoCapture(CAMERAPORT)
 first_frame_seen = False #don't record frames aggressively until the first successful decode
 expected_frame_count = -1
 display_frame = []
