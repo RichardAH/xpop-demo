@@ -17,6 +17,9 @@ import hashlib
 from binascii  import hexlify, unhexlify
 import math
 import base64
+import pyqrcode
+
+from datetime import datetime
 
 # Set according to what your connected camera is
 CAMERAPORT = 0
@@ -26,15 +29,15 @@ def err(e):
     return False
 
 # This function shouldn't technically be needed but xrpl-py needs updating
-# for validation fields. There's only one signing field: sfSignature, we need to 
+# for validation fields. There's only one signing field: sfSignature, we need to
 # clip around it.
 # @return {
-#   without_signature: input sans signing field, 
+#   without_signature: input sans signing field,
 #   key: key, signature: signature, ledger_hash: ledgerhash }
 def process_validation_message(val):
     if type(val) == str:
         val = unhexlify(val)
-    
+
     upto = 0
     rem = len(val)
 
@@ -42,7 +45,7 @@ def process_validation_message(val):
 
     sig_start = 0
     sig_end = 0
-    
+
     # Flags
     if val[upto] != 0x22 or rem < 5:
         return err("validation: sfFlags missing")
@@ -69,7 +72,7 @@ def process_validation_message(val):
         if rem < 6:
             return err("validation: sfLoadFee missing payload")
         upto += 6; rem -= 6
-        
+
     # ReserveBase (optional)
     if val[upto] == 0x20 and rem >= 2 and val[upto+1] == 0x1F:
         if rem < 6:
@@ -81,7 +84,7 @@ def process_validation_message(val):
         if rem < 6:
             return err("validation: sfReserveIncrement missing payload")
         upto += 6; rem -= 6
-    
+
     # BaseFee (optional)
     if val[upto] == 0x35:
         if rem < 9:
@@ -93,7 +96,7 @@ def process_validation_message(val):
         if rem < 9:
             return err("validation: sfCookie missing payload")
         upto += 9; rem -= 9
-   
+
     # ServerVersion (optional)
     if val[upto] == 0x3B:
         if rem < 9:
@@ -103,7 +106,7 @@ def process_validation_message(val):
     # LedgerHash
     if val[upto] != 0x51 or rem < 33:
         return err("validation: sfLedgerHash missing")
-    
+
     ret["ledger_hash"] = str(hexlify(val[upto+1:upto+33]), 'utf-8').upper()
     upto += 33; rem -= 32
 
@@ -136,12 +139,12 @@ def process_validation_message(val):
     sigstart = upto
     if val[upto] != 0x76 or rem < 3:
         return err("validation: sfSignature missing")
-    
-    sigsize = val[upto+1] 
+
+    sigsize = val[upto+1]
     upto += 2; rem -= 2
     if sigsize > rem:
         return err("validation: sfSignature incomplete")
-    
+
     ret["signature"] = val[upto:upto+sigsize]
 
     upto += sigsize; rem -= sigsize
@@ -193,7 +196,7 @@ def hash_txn_and_meta(txn, meta):
 
     vl1 = make_vl_bytes(len(txn))
     vl2 = make_vl_bytes(len(meta))
-    
+
     if vl1 == False or vl2 == False:
         return False
 
@@ -239,7 +242,7 @@ def hash_ledger(idx, coins, phash, txroot, acroot, pclose, close, res, flags):
 def hash_proof(proof):
     if type(proof) != list:
         return err('Proof must be a list')
-    
+
     if len(proof) < 16:
         return False
 
@@ -255,7 +258,7 @@ def hash_proof(proof):
             return err("Unknown object in proof list")
 
     return hasher.digest()[:32]
-    
+
 
 def proof_contains(proof, h):
     if type(proof) != list or len(proof) < 16:
@@ -353,7 +356,7 @@ def verify(xpop, vl_key):
     payload = None
     if not "blob" in unl:
         return err("XPOP invalid validation.unl.blob")
-    
+
     payload = base64.b64decode(unl["blob"])
 
     # 7. Check UNL blob signature
@@ -388,7 +391,7 @@ def verify(xpop, vl_key):
             return err("XPOP missing validation_public_key from unl entry")
         if not "manifest" in v:
             return err("XPOP missing manifest from unl entry")
-    
+
         manifest = None
         try:
             manifest = base64.b64decode(v["manifest"])
@@ -396,7 +399,7 @@ def verify(xpop, vl_key):
             manifest = xrpl.core.binarycodec.decode(manifest)
         except:
             return err("XPOP invalid manifest in unl entry")
-        
+
         if not "MasterSignature" in manifest:
             return err("XPOP manifest missing master signature in unl entry")
 
@@ -428,6 +431,11 @@ def verify(xpop, vl_key):
 
     # 13. Check if the transaction and meta is actually in the proof
     computed_tx_hash = hash_txn(transaction["blob"])
+    print("blob")
+    print(transaction["blob"])
+    print("meta")
+    print(transaction["meta"])
+
     computed_tx_hash_and_meta = hash_txn_and_meta(transaction["blob"], transaction["meta"])
 
     if not proof_contains(transaction["proof"], computed_tx_hash_and_meta):
@@ -460,7 +468,7 @@ def verify(xpop, vl_key):
         # RH NOTE: Any validation messages not the UNL are skipped, although this should probably be an error
         if not nodepub in validators:
             continue
-        
+
         # 18. Parse the validation message
         valmsg = process_validation_message(data[nodepub])
         if valmsg == False:
@@ -471,12 +479,12 @@ def verify(xpop, vl_key):
         if valmsg["key"] != validators[nodepub]:
             err("Warning: XPOP contained invalid KEY for validation from " + nodepub)
             continue
-        
+
         # 20. Check the ledger hash in the validation message matches the one we generated from tx merkel
         if valmsg["ledger_hash"] != computed_ledger_hash:
             #err("Warning: XPOP contained validation for another ledger hash")
             continue
-        
+
         # 21. Check the signature on the validation message (expensive)
         valpayload = b'VAL\x00' + valmsg["without_signature"]
         if not xrpl.core.keypairs.is_valid_message(valpayload, valmsg["signature"], valmsg["key"]):
@@ -485,7 +493,7 @@ def verify(xpop, vl_key):
 
         # 22. If all is well the successfully verified validation message counts as a vote toward quorum
         votes += 1
-    
+
 
     ##
     ## Part D: Return useful information to the caller
@@ -547,9 +555,10 @@ def verify(xpop, vl_key):
 
 
 def ctrlc(signal_received, frame):
+    global os_return_code
     print("bye!")
     dying = True
-    sys.exit(0)
+    sys.exit(os_return_code)
 
 signal(SIGINT, ctrlc)
 
@@ -564,7 +573,7 @@ def startup():
 #    cam.set(cv2.CAP_PROP_AUTOFOCUS, 1) # disable auto focus
 #    _, img = cam.read()
 #    img = cv2.flip(img, -1)
-#    cv2.imwrite("frame.jpg", img) 
+#    cv2.imwrite("frame.jpg", img)
 
 
 def cleanup():
@@ -580,7 +589,11 @@ def video_display(thread_id):
     global final_text
     global ui_font_size
     global ui_refresh_interval
-    global wait_after_complete 
+    global wait_after_complete
+    global qr_text
+    global timeout
+    global first_frame_seen
+    global qr_display_time
 
     window = tkinter.Tk()
     window.title("xPoP")
@@ -590,13 +603,20 @@ def video_display(thread_id):
     w = window.winfo_width()
     h = window.winfo_height()
     canvas = tkinter.Canvas(window, width = w, height = h)
-    label = tkinter.Label(window, text="xpop", fg="Red", font=("Helvetica", ui_font_size), anchor=tkinter.N)
+    label = tkinter.Label(window, text="xpop", fg="Blue", font=("Helvetica", ui_font_size), anchor=tkinter.N)
     label.place(x=w/2, y=0, anchor=tkinter.N)
 
     canvas.pack()
 
+    qr = pyqrcode.create(qr_text)
+    qr_img = tkinter.BitmapImage(data = qr.xbm(scale=8))
+
+    display_time_start = time.time()
+
+    colour = "Blue"
+
     complete_counter = 0
-    while True:
+    while not dying:
 
         if time.time() > t_end:
             dying = True
@@ -610,28 +630,36 @@ def video_display(thread_id):
             dp.append(display_frame[0])
         mutex_ui.release()
 
-        if len(dp) > 0 and type(dp[0]) != type(None):
-            try:
-#               dp[0] = cv2.resize(dp[0], (w,h))
-                photo = PIL.ImageTk.PhotoImage(image = PIL.Image.fromarray(dp[0][:,:,::-1]))
-            finally:
-                pass
+        elapsed =  int(time.time() - display_time_start) # this is a global timer so we only show QR once
+        if elapsed < qr_display_time and not first_frame_seen:
+            canvas.delete("all")
+            canvas.create_image((800 - qr_img.width())/2, (600-qr_img.height())/2, image=qr_img, anchor=tkinter.NW)
+            text = "Please pay to the following QR code ~ " + str(qr_display_time - elapsed) + "s left"
+        else:
+            colour = "Red"
+            if len(dp) > 0 and type(dp[0]) != type(None):
+                try:
+    #               dp[0] = cv2.resize(dp[0], (w,h))
+                    photo = PIL.ImageTk.PhotoImage(image = PIL.Image.fromarray(dp[0][:,:,::-1]))
+                finally:
+                    pass
 
-            if photo:
-                canvas.delete("all")
-                canvas.create_image(0, 0, image=photo, anchor=tkinter.NW)
-        
-        text = display_text + " ~ " + str(math.floor(t_end-time.time())) + str("s until timeout")
+                if photo:
+                    canvas.delete("all")
+                    canvas.create_image(0, 0, image=photo, anchor=tkinter.NW)
+
+            text = display_text + " ~ " + str(math.floor(t_end-time.time())) + str("s until timeout")
 
         if complete:
-            text = final_text + "\n" + "Demo reset in " + str(math.floor((wait_after_complete - complete_counter)/ui_refresh_interval))
+            colour = "Green"
+            text = final_text + "\n" + "Please wait... " + str(math.floor((wait_after_complete - complete_counter)/ui_refresh_interval))
             complete_counter = complete_counter + 1
 
         if complete_counter > wait_after_complete:
             dying = True
             break
 
-        label.configure(text=text)
+        label.configure(text=text, fg=colour)
         window.update_idletasks()
         window.update()
 
@@ -643,7 +671,7 @@ def video_display(thread_id):
 def video_reader(thread_id):
 
 
-    global dying 
+    global dying
     global first_frame_seen
     global display_frame
     global frame_raw
@@ -655,7 +683,7 @@ def video_reader(thread_id):
         _, img = cam.read()
         mutex_frame_raw.acquire()
         try:
-            if first_frame_seen or len(frame_raw) == 0: 
+            if first_frame_seen or len(frame_raw) == 0:
                 frame_raw.append(img)
                 unprocessed_frames = len(frame_raw)
             else:
@@ -675,9 +703,9 @@ def video_reader(thread_id):
                 display_frame[0] = img
             mutex_ui.release()
 
-        
+
 #        time.sleep(min_frame_delay)
-            
+
 def attempt_reconstructions():
     global parity_data
     global parity_len
@@ -704,11 +732,11 @@ def attempt_reconstructions():
         p = sorted(parity_data.keys())
         if len(p) < 1:
             return
-        
+
         pairs = [[0, p[0]]]
         for i in range(1, len(p)):
             pairs.append([p[i-1], p[i]])
-        
+
         for i in pairs:
             lower = i[0]
             higher = i[1]
@@ -722,11 +750,11 @@ def attempt_reconstructions():
                 if missing_count > 1:
                     break
                 missing = j
-                
-            
+
+
             if missing_count != 1:
                 continue
-            
+
             # execution to here means there is only one frame missing in this span
             # now we can perform a reconstruction
             r = []
@@ -737,30 +765,30 @@ def attempt_reconstructions():
                     sum = sum + (85 - parity_data[lower][x])
                 else:
                     sum = sum - 33
-                
+
                 # subtract frames we have
                 for j in range(lower+1, higher+1):
                     if j in frame_data and x < len(frame_data[j]):
                         sum = sum + (85 - (frame_data[j][x] - 33))
-                
+
                 sum = sum % 85
-        
-                sum = sum + 33                
+
+                sum = sum + 33
 
                 r.append(sum)
-                
+
 
             # trim final frame when applicable
             if missing == higher:
                 r = r[0:parity_len[higher]]
-    
+
 
             frame_data[missing] = bytes(r)
             print("reconstructed frame : " + str(missing) + "[" + str(lower) + ", " + str(higher) + "]")
 
     except Exception as e:
         print("exception: ", e)
-        
+
     finally:
         mutex_frame_data.release()
 
@@ -811,14 +839,26 @@ def try_complete():
             mutex_ui.acquire()
             final_text = "Invalid xPoP / Verification Failed."
             if verify_result:
-                final_text = "Valid xPoP! " + verify_result["tx_blob"]["TransactionType"] + " " + verify_result["tx_meta"]["TransactionResult"] + "\n" + verify_result["tx_hash"]
-                if "tx_destination" in verify_result:
-                    final_text = final_text + "\n" + "Destination: " + verify_result["tx_destination"]
-                if "tx_destination_tag" in verify_result:
-                    final_text = final_text + "\n" + "Tag: " + str(verify_result["tx_destination_tag"])
-                if "tx_delivered_drops" in verify_result:
-                    final_text = final_text + "\n" + "Drops delivered: " + str(verify_result["tx_delivered_drops"])
-                
+                if not ("tx_destination_tag" in verify_result) or \
+                    not ("tx_delivered_drops" in verify_result) or \
+                    verify_result["tx_destination_tag"] != xrp_dt or \
+                    verify_result["tx_delivered_drops"] != xrp_amount * 1000000: 
+                    final_text = "Valid xPoP, but isn't the requested payment!"
+                    print("INVALID-2") 
+                else:
+                    final_text = "Valid xPoP, payment matches. Thank you."
+                    os_return_code = 50
+                    print("VALID") 
+            else:
+                print("INVALID")
+                #final_text = "Valid xPoP! " + verify_result["tx_blob"]["TransactionType"] + " " + verify_result["tx_meta"]["TransactionResult"] + "\n" + verify_result["tx_hash"]
+                #if "tx_destination" in verify_result:
+                #    final_text = final_text + "\n" + "Destination: " + verify_result["tx_destination"]
+                #if "tx_destination_tag" in verify_result:
+                #    final_text = final_text + "\n" + "Tag: " + str(verify_result["tx_destination_tag"])
+                #if "tx_delivered_drops" in verify_result:
+                #    final_text = final_text + "\n" + "Drops delivered: " + str(verify_result["tx_delivered_drops"])
+
             mutex_ui.release()
 
             dying = True
@@ -860,7 +900,7 @@ def video_decoder(thread_id):
         #img = cv2.flip(img, -1)
         if type(img) == type(None):
             print("cant read video device")
-            time.sleep(2)
+            dying = True
             continue
         dimg = decode(img)
         if len(dimg) == 0:
@@ -880,7 +920,7 @@ def video_decoder(thread_id):
             is_par = packet_type == b'XPAR'
             if not is_par and packet_type != b'XPOP':
                 continue
-        
+
 
             frame_count = -1
             frame_number = -1
@@ -895,7 +935,7 @@ def video_decoder(thread_id):
                     txt = txt + " [" + str(len(frame_data)) + "/" + str(frame_count) + "]"
             except:
                 pass
-            
+
             if frame_count == -1:
                 continue
 
@@ -950,22 +990,36 @@ cam = cv2.VideoCapture(CAMERAPORT)
 first_frame_seen = False #don't record frames aggressively until the first successful decode
 expected_frame_count = -1
 display_frame = []
-display_text = "xPoP! Place animating QR under reader."
-timeout = 100
+display_text = "Place XPOP under reader"
+timeout = 200
+qr_display_time = 30
 t_end = time.time() + timeout
 unprocessed_frame_cap = 200
 min_frame_delay = 0.001
 camera_res_x = 800
 camera_res_y = 600
 camera_brightness = 100
-ui_font_size = 12
+ui_font_size = 18
 ui_refresh_interval = 0.7
 verify_key = "ED45D1840EE724BE327ABE9146503D5848EFD5F38B6D5FEDE71E80ACCE5E6E738B"
 verify_result = False
 dying = False
-complete = False            
+complete = False
 final_text = ""
-wait_after_complete = 5
+wait_after_complete = 15
+os_return_code = 0
+
+if len(sys.argv) != 3:
+    print("Usage: ", sys.argv[0], "xrp_amount", "receiving_address")
+    sys.exit(os_return_code)
+
+# compose the QR code for the user to pay to
+xrp_amount = float(sys.argv[1])
+xrp_addr = sys.argv[2]
+xrp_dt = int(datetime.timestamp(datetime.now()))
+
+qr_text = 'xrpl://to=' + xrp_addr + '&amount=' + str(xrp_amount) + '&dt=' + str(xrp_dt)
+#print("QR req:", qr_text)
 
 startup()
 
@@ -990,6 +1044,5 @@ e.join()
 #f.join()
 
 cleanup()
-
 
 
