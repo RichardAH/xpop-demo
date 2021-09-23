@@ -431,10 +431,6 @@ def verify(xpop, vl_key):
 
     # 13. Check if the transaction and meta is actually in the proof
     computed_tx_hash = hash_txn(transaction["blob"])
-    print("blob")
-    print(transaction["blob"])
-    print("meta")
-    print(transaction["meta"])
 
     computed_tx_hash_and_meta = hash_txn_and_meta(transaction["blob"], transaction["meta"])
 
@@ -616,55 +612,61 @@ def video_display(thread_id):
     colour = "Blue"
 
     complete_counter = 0
-    while not dying:
+    try:
+        while not dying:
 
-        if time.time() > t_end:
-            dying = True
-            break
+            if time.time() > t_end:
+                dying = True
+                break
 
-        photo = None
-        dp = []
+            photo = None
+            dp = []
 
-        mutex_ui.acquire()
-        if len(display_frame) == 1:
-            dp.append(display_frame[0])
-        mutex_ui.release()
+            mutex_ui.acquire()
+            if len(display_frame) == 1:
+                dp.append(display_frame[0])
+            mutex_ui.release()
 
-        elapsed =  int(time.time() - display_time_start) # this is a global timer so we only show QR once
-        if elapsed < qr_display_time and not first_frame_seen:
-            canvas.delete("all")
-            canvas.create_image((800 - qr_img.width())/2, (600-qr_img.height())/2, image=qr_img, anchor=tkinter.NW)
-            text = "Please pay to the following QR code ~ " + str(qr_display_time - elapsed) + "s left"
-        else:
-            colour = "Red"
-            if len(dp) > 0 and type(dp[0]) != type(None):
-                try:
-    #               dp[0] = cv2.resize(dp[0], (w,h))
-                    photo = PIL.ImageTk.PhotoImage(image = PIL.Image.fromarray(dp[0][:,:,::-1]))
-                finally:
-                    pass
+            elapsed =  int(time.time() - display_time_start) # this is a global timer so we only show QR once
+            if elapsed < qr_display_time and not first_frame_seen:
+                canvas.delete("all")
+                canvas.create_image((800 - qr_img.width())/2, (600-qr_img.height())/2, image=qr_img, anchor=tkinter.NW)
+                text = "Please pay to the following QR code ~ " + str(qr_display_time - elapsed) + "s left"
+            else:
+                colour = "Red"
+                if len(dp) > 0 and type(dp[0]) != type(None):
+                    try:
+        #               dp[0] = cv2.resize(dp[0], (w,h))
+                        photo = PIL.ImageTk.PhotoImage(image = PIL.Image.fromarray(dp[0][:,:,::-1]))
+                    except:
+                        if dying:
+                            break
+                    finally:
+                        pass
 
-                if photo:
-                    canvas.delete("all")
-                    canvas.create_image(0, 0, image=photo, anchor=tkinter.NW)
+                    if photo:
+                        canvas.delete("all")
+                        canvas.create_image(0, 0, image=photo, anchor=tkinter.NW)
 
-            text = display_text + " ~ " + str(math.floor(t_end-time.time())) + str("s until timeout")
+                text = display_text + " ~ " + str(math.floor(t_end-time.time())) + str("s until timeout")
 
-        if complete:
-            colour = "Green"
-            text = final_text + "\n" + "Please wait... " + str(math.floor((wait_after_complete - complete_counter)/ui_refresh_interval))
-            complete_counter = complete_counter + 1
+            if complete:
+                colour = "Green"
+                text = final_text + "\n" + "Please wait... " + str(math.floor((wait_after_complete - complete_counter)/ui_refresh_interval))
+                complete_counter = complete_counter + 1
 
-        if complete_counter > wait_after_complete:
-            dying = True
-            break
+            if complete_counter > wait_after_complete:
+                dying = True
+                break
 
-        label.configure(text=text, fg=colour)
-        window.update_idletasks()
-        window.update()
+            label.configure(text=text, fg=colour)
+            window.update_idletasks()
+            window.update()
 
-        time.sleep(ui_refresh_interval)
-
+            time.sleep(ui_refresh_interval)
+    except:
+        dying = True
+        return
 #                print("writing frame.jpg")
 #                cv2.imwrite("/tmp/ramdisk/frame.jpg", img)
 
@@ -809,6 +811,7 @@ def try_complete():
     global verify_key
     global verify_result
     global complete
+    global os_return_code
 
     if complete or dying:
         return
@@ -835,22 +838,30 @@ def try_complete():
 
             verify_result = verify(full_data, verify_key)
 
-            print(verify_result)
+            #print(verify_result)
             mutex_ui.acquire()
             final_text = "Invalid xPoP / Verification Failed."
             if verify_result:
-                if not ("tx_destination_tag" in verify_result) or \
-                    not ("tx_delivered_drops" in verify_result) or \
-                    verify_result["tx_destination_tag"] != xrp_dt or \
-                    verify_result["tx_delivered_drops"] != xrp_amount * 1000000: 
-                    final_text = "Valid xPoP, but isn't the requested payment!"
-                    print("INVALID-2") 
+                if not verify_result["tx_is_payment"]:
+                    print("INVALID - Not a payment transaction.")
+                elif not ("tx_destination" in verify_result):
+                    print("INVALID - Not a payment transaction [2].")
+                elif not ("tx_destination_tag" in verify_result):
+                    print("INVALID - Missing destination tag.")
+                elif not ("tx_delivered_drops" in verify_result):
+                    print("INVALID - Payment did not deliver XRP.")
+                elif verify_result["tx_destination"] != xrp_addr:
+                    print("INVALID - Payment was sent to the wrong address.")
+                elif verify_result["tx_destination_tag"] != xrp_dt:
+                    print("INVALID - Payment was sent to the wrong dest tag.")
+                elif verify_result["tx_delivered_drops"] < xrp_amount * 1000000:
+                    print("INVALID - Payment did not deliver enough drops.")
                 else:
                     final_text = "Valid xPoP, payment matches. Thank you."
                     os_return_code = 50
-                    print("VALID") 
+                    print("VALID - Valid xPoP matches requested payment") 
             else:
-                print("INVALID")
+                print("INVALID - xPoP failed verification.")
                 #final_text = "Valid xPoP! " + verify_result["tx_blob"]["TransactionType"] + " " + verify_result["tx_meta"]["TransactionResult"] + "\n" + verify_result["tx_hash"]
                 #if "tx_destination" in verify_result:
                 #    final_text = final_text + "\n" + "Destination: " + verify_result["tx_destination"]
@@ -1037,12 +1048,16 @@ d.start()
 e.start()
 #f.start()
 
-b.join()
-c.join()
-d.join()
-e.join()
-#f.join()
+try:
+    b.join()
+    c.join()
+    d.join()
+    e.join()
+    #f.join()
+except:
+    pass
 
 cleanup()
 
+sys.exit(os_return_code)
 
